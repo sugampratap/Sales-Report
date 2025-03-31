@@ -1,0 +1,312 @@
+import { useState } from 'react';
+
+export default function AutomatedSalesReport() {
+  /*
+    LAST CHANGE:
+      1) The user enters Last Week's Sales in raw SR (e.g. 1520000 => 1,520,000), not in millions.
+      2) We'll apply logic to output that value in K or Mn for the final display, respecting brand-based decimals.
+
+    Example usage:
+      If user enters 1520000 in LW sales => 1.52 Mn in output
+      If user enters 800000 => 800K in output for all but Maestro's 'overall' where decimals are 0 => 800K
+  */
+
+  const [brand, setBrand] = useState('Maestro');
+  const [lwSalesInput, setLwSalesInput] = useState('');
+  const [rawInput, setRawInput] = useState('');
+  const [result, setResult] = useState('');
+
+  function getStatusIcon(percentage) {
+    if (percentage > 0) {
+      return '🟢';
+    } else if (percentage <= 0 && percentage >= -30) {
+      return '🟡';
+    } else {
+      return '🔴';
+    }
+  }
+
+  function formatSales(value, type = 'overall') {
+    const MILLION = 1_000_000;
+    if (value >= MILLION) {
+      const millions = value / MILLION;
+      return millions.toFixed(2) + ' Mn';
+    } else {
+      const thousands = value / 1000;
+      let decimals = 1;
+      if (brand.toLowerCase() === 'maestro' && type === 'overall') {
+        decimals = 0;
+      }
+      return thousands.toFixed(decimals) + 'K';
+    }
+  }
+
+  function joinWithCommasAndAmp(arr) {
+    if (arr.length === 1) return arr[0];
+    if (arr.length === 2) return arr.join(' & ');
+    const last = arr[arr.length - 1];
+    const initial = arr.slice(0, -1).join(', ');
+    return `${initial} & ${last}`;
+  }
+
+  function generateReport() {
+    try {
+      const lines = rawInput.split('\n').map((line) => line.trim());
+
+      let totalSales = 0;
+      const totalSalesLine = lines.find((line) =>
+        line.toUpperCase().includes('TOTAL SALES:')
+      );
+      if (totalSalesLine) {
+        const match = totalSalesLine.match(/TOTAL SALES:\s*([\d,.]+)/i);
+        if (match) {
+          totalSales = parseFloat(match[1].replace(/,/g, ''));
+        }
+      }
+
+      let rawWeekGrowth = 0;
+      let hasWeekGrowth = false;
+      const growthLineIndex = lines.findIndex((line) =>
+        line.toLowerCase().includes('than past week')
+      );
+      if (growthLineIndex !== -1) {
+        hasWeekGrowth = true;
+        const growthLine = lines[growthLineIndex];
+        const match = growthLine.match(/([+-]?[\d.]+)%/);
+        if (match) {
+          rawWeekGrowth = parseFloat(match[1]);
+        }
+      }
+
+      let platformsToCheck;
+      if (brand === 'Maestro') {
+        platformsToCheck = ['App', 'Web', 'Delivery', 'HungerStation', 'Jahez'];
+      } else if (brand === 'Pinzatta' || brand === 'MAD') {
+        platformsToCheck = ['HungerStation', 'Jahez', 'The Chefz', 'ToYou'];
+      } else {
+        platformsToCheck = [];
+      }
+
+      function parsePlatformBlock(name) {
+        const idx = lines.findIndex((line) =>
+          line.toLowerCase().startsWith(name.toLowerCase() + ':')
+        );
+        if (idx === -1) return null;
+
+        const platform = {
+          name,
+          orders: 0,
+          sales: 0,
+          shareSales: 0,
+          weeklySalesChange: 0,
+          weeklySalesIcon: '',
+        };
+
+        const mainLine = lines[idx];
+        const mainMatch = mainLine.match(
+          /[^:]+:\s*([\d,.]+)\s*orders.*?([\d,.]+)\s*SR/i
+        );
+        if (mainMatch) {
+          platform.orders = parseFloat(mainMatch[1].replace(/,/g, ''));
+          platform.sales = parseFloat(mainMatch[2].replace(/,/g, ''));
+        }
+
+        let shareLine = lines[idx + 2];
+        if (
+          shareLine &&
+          shareLine.match(/([\d.]+)% orders,\s*([\d.]+)% sales/i)
+        ) {
+          const shareMatch = shareLine.match(
+            /([\d.]+)% orders,\s*([\d.]+)% sales/i
+          );
+          if (shareMatch) {
+            platform.shareSales = parseFloat(shareMatch[2]);
+          }
+        } else {
+          shareLine = lines[idx + 1];
+          if (
+            shareLine &&
+            shareLine.match(/([\d.]+)% orders,\s*([\d.]+)% sales/i)
+          ) {
+            const shareMatch = shareLine.match(
+              /([\d.]+)% orders,\s*([\d.]+)% sales/i
+            );
+            if (shareMatch) {
+              platform.shareSales = parseFloat(shareMatch[2]);
+            }
+          }
+        }
+
+        let weeklyLine = '';
+        for (let i = idx; i < idx + 5 && i < lines.length; i++) {
+          if (lines[i] && lines[i].includes('📈-W:')) {
+            weeklyLine = lines[i];
+            break;
+          }
+        }
+        if (weeklyLine) {
+          const wMatch = weeklyLine.match(/([+-][\d.]+)% sales/i);
+          if (wMatch) {
+            platform.weeklySalesChange = parseFloat(wMatch[1]);
+            platform.weeklySalesIcon = getStatusIcon(platform.weeklySalesChange);
+          }
+        }
+
+        return platform;
+      }
+
+      let parsedPlatforms = platformsToCheck
+        .map((p) => parsePlatformBlock(p))
+        .filter(Boolean);
+
+      parsedPlatforms = parsedPlatforms.map((plat) => {
+        if (plat.name.toLowerCase() === 'hungerstation') {
+          return {
+            ...plat,
+            name: 'Hunger',
+          };
+        }
+        return plat;
+      });
+
+      const formattedOverallSales = formatSales(totalSales, 'overall');
+
+      const lwSalesNum = parseFloat(lwSalesInput);
+      let formattedLW = '';
+      let formattedEst = '';
+      if (!isNaN(lwSalesNum) && lwSalesNum > 0) {
+        const est = lwSalesNum * (1 + rawWeekGrowth / 100);
+        formattedLW = formatSales(lwSalesNum, 'lw');
+        formattedEst = formatSales(est, 'est');
+      }
+
+      let output = [];
+      output.push(`[${brand}]`);
+
+      if (hasWeekGrowth) {
+        const overallIcon = getStatusIcon(rawWeekGrowth);
+        const overallRounded = Math.round(Math.abs(rawWeekGrowth));
+        output.push(
+          `Overall Sales ${formattedOverallSales} SR | ${overallRounded}% ${overallIcon}`
+        );
+      } else {
+        output.push(`Overall Sales ${formattedOverallSales} SR`);
+      }
+
+      if (formattedEst && formattedLW) {
+        output.push(`Est sales: ${formattedEst}, LW Sales: ${formattedLW}`);
+      }
+      output.push('');
+
+      let significantDeclines = [];
+
+      parsedPlatforms.forEach((p) => {
+        const absChange = Math.round(Math.abs(p.weeklySalesChange));
+        output.push(`${p.name} ${absChange}% ${p.weeklySalesIcon}`);
+
+        if (p.weeklySalesChange < -30) {
+          significantDeclines.push(p.name);
+        }
+      });
+      output.push('');
+
+      if (significantDeclines.length > 0) {
+        const joined = joinWithCommasAndAmp(significantDeclines);
+        output.push(`*${joined} witnessed a significant decline*`);
+        output.push('');
+      }
+
+      const shares = parsedPlatforms.map((p) => {
+        const shareRounded = Math.round(p.shareSales);
+        return `${p.name} ${shareRounded}%`;
+      });
+      if (shares.length > 0) {
+        output.push(`% of overall - ${shares.join(', ')}`);
+      }
+
+      setResult(output.join('\n'));
+    } catch (err) {
+      setResult('Error: ' + err.message);
+    }
+  }
+
+  return (
+    <div className="min-h-screen bg-gradient-to-br from-gray-50 to-gray-100 p-6">
+      <div className="max-w-4xl mx-auto">
+        <div className="mb-8 text-center">
+          <h1 className="text-3xl font-bold text-gray-800 mb-2">Sales Report Generator</h1>
+          <p className="text-gray-600">Automatically generate formatted sales reports from raw data</p>
+        </div>
+
+        <div className="bg-white rounded-xl shadow-lg p-6 mb-6">
+          <h2 className="text-xl font-semibold text-gray-800 mb-4">Report Configuration</h2>
+          
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-6 mb-6">
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-1">Brand</label>
+              <select
+                className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 transition"
+                value={brand}
+                onChange={(e) => setBrand(e.target.value)}
+              >
+                <option value="Maestro">Maestro</option>
+                <option value="Pinzatta">Pinzatta</option>
+                <option value="MAD">MAD</option>
+              </select>
+            </div>
+            
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-1">
+                Last Week's Sales (raw SR)
+              </label>
+              <input
+                type="text"
+                className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 transition"
+                placeholder="e.g. 1520000"
+                value={lwSalesInput}
+                onChange={(e) => setLwSalesInput(e.target.value)}
+              />
+            </div>
+          </div>
+
+          <div>
+            <label className="block text-sm font-medium text-gray-700 mb-1">
+              Paste Hourly Sales Report
+            </label>
+            <textarea
+              className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 transition min-h-[200px]"
+              value={rawInput}
+              onChange={(e) => setRawInput(e.target.value)}
+            />
+          </div>
+
+          <div className="mt-6 flex justify-center">
+            <button
+              onClick={generateReport}
+              className="px-6 py-3 bg-blue-600 hover:bg-blue-700 text-white font-medium rounded-lg transition-all shadow-md hover:shadow-lg active:scale-95"
+            >
+              Generate Report
+            </button>
+          </div>
+        </div>
+
+        {result && (
+          <div className="bg-white rounded-xl shadow-lg p-6">
+            <div className="flex justify-between items-center mb-4">
+              <h2 className="text-xl font-semibold text-gray-800">Generated Report</h2>
+              <button 
+                onClick={() => navigator.clipboard.writeText(result)}
+                className="px-3 py-1 text-sm bg-gray-100 hover:bg-gray-200 rounded-md transition"
+              >
+                Copy
+              </button>
+            </div>
+            <div className="bg-gray-50 p-4 rounded-lg border border-gray-200">
+              <pre className="whitespace-pre-wrap font-mono text-gray-800">{result}</pre>
+            </div>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
